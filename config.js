@@ -1,3 +1,4 @@
-// Supabase configuration
-window.KARSA_SUPABASE_URL = "PASTE_SUPABASE_URL_HERE";
-window.KARSA_SUPABASE_ANON_KEY = "PASTE_SUPABASE_ANON_KEY_HERE";
+window.KARSA_CONFIG = {
+  url: "https://vzkxtykuimmajrowxfey.supabase.co",
+  publishableKey: "sb_publishable_abQ8dBWXzIIK1QQSX4tViw_ROS_KZlS"
+};
