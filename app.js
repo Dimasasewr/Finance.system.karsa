@@ -1,2185 +1,2682 @@
 /* =========================================================
    KARSA FINANCE SYSTEM
-   app.js
+   app.js — Supabase + Frontend Controller
    ========================================================= */
 
-"use strict";
+(() => {
+  "use strict";
 
-/* =========================================================
-   GLOBAL
-   ========================================================= */
+  /* =========================================================
+     1. SUPABASE CONFIG
+     ========================================================= */
 
-let sb = null;
-let currentUser = null;
-
-const state = {
-  transactions: [],
-  sales: [],
-  purchases: [],
-  ar: [],
-  ap: [],
-  products: [],
-  journals: [],
-  accounts: [],
-  cashAccounts: []
-};
-
-const $ = (id) => document.getElementById(id);
-
-const rupiah = (value) => {
-  return new Intl.NumberFormat("id-ID", {
-    style: "currency",
-    currency: "IDR",
-    maximumFractionDigits: 0
-  }).format(Number(value || 0));
-};
-
-const today = () => {
-  return new Date().toISOString().slice(0, 10);
-};
-
-function escapeHTML(value) {
-  return String(value ?? "").replace(/[&<>"']/g, function (char) {
-    return {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#039;"
-    }[char];
-  });
-}
-
-/* =========================================================
-   LOADING SCREEN
-   ========================================================= */
-
-function hideLoader() {
-  const loader = $("loader");
-
-  if (!loader) return;
-
-  loader.style.opacity = "0";
-  loader.style.visibility = "hidden";
-  loader.style.pointerEvents = "none";
-  loader.style.display = "none";
-}
-
-function showLoader() {
-  const loader = $("loader");
-
-  if (!loader) return;
-
-  loader.style.display = "";
-  loader.style.visibility = "visible";
-  loader.style.opacity = "1";
-  loader.style.pointerEvents = "auto";
-}
-
-/*
-   PENTING:
-   Loader tidak boleh menggantung.
-   Setelah 1.5 detik dipastikan hilang.
-*/
-setTimeout(function () {
-  hideLoader();
-}, 1500);
-
-/* =========================================================
-   CONFIG
-   ========================================================= */
-
-function getConfig() {
-  const config = window.KARSA_CONFIG || {};
-
-  return {
-    url: config.url || "",
-    publishableKey: config.publishableKey || ""
-  };
-}
-
-function isConfigured() {
-  const config = getConfig();
-
-  return Boolean(
-    config.url &&
-    config.publishableKey &&
-    config.url.includes("supabase.co") &&
-    !config.url.includes("PASTE_") &&
-    !config.publishableKey.includes("PASTE_")
-  );
-}
-
-/* =========================================================
-   MESSAGE
-   ========================================================= */
-
-function showMessage(message, type = "error") {
-  let box = $("authMessage");
-
-  if (!box) {
-    box = document.createElement("div");
-    box.id = "authMessage";
-
-    const form = $("loginForm");
-
-    if (form) {
-      form.prepend(box);
-    } else {
-      document.body.prepend(box);
-    }
-  }
-
-  box.textContent = message;
-  box.className = "auth-message " + type;
-}
-
-/* =========================================================
-   SCREEN
-   ========================================================= */
-
-function showLogin() {
-  hideLoader();
-
-  const auth = $("auth");
-  const app = $("app");
-
-  if (auth) {
-    auth.classList.remove("hidden");
-    auth.style.display = "";
-  }
-
-  if (app) {
-    app.classList.add("hidden");
-    app.style.display = "none";
-  }
-}
-
-function showApp() {
-  hideLoader();
-
-  const auth = $("auth");
-  const app = $("app");
-
-  if (auth) {
-    auth.classList.add("hidden");
-    auth.style.display = "none";
-  }
-
-  if (app) {
-    app.classList.remove("hidden");
-    app.style.display = "";
-  }
-
-  renderAll();
-}
-
-/* =========================================================
-   SUPABASE INITIALIZATION
-   ========================================================= */
-
-function initializeSupabase() {
-  if (!isConfigured()) {
-    console.error("KARSA: Supabase config belum tersedia.");
-    return false;
-  }
-
-  if (!window.supabase) {
-    console.error(
-      "KARSA: Supabase JavaScript library belum dimuat."
-    );
-
-    return false;
-  }
-
-  const config = getConfig();
+  let SB_URL = "";
+  let SB_KEY = "";
 
   try {
-    sb = window.supabase.createClient(
-      config.url,
-      config.publishableKey
+    SB_URL =
+      window.SUPABASE_URL ||
+      window.supabaseUrl ||
+      window.SB_URL ||
+      "";
+
+    SB_KEY =
+      window.SUPABASE_ANON_KEY ||
+      window.SUPABASE_PUBLISHABLE_KEY ||
+      window.supabaseAnonKey ||
+      window.SB_KEY ||
+      "";
+  } catch (e) {
+    console.error("Config error:", e);
+  }
+
+  function configured() {
+    return !!(
+      SB_URL &&
+      SB_KEY &&
+      !SB_URL.includes("PASTE_") &&
+      !SB_KEY.includes("PASTE_")
     );
-
-    console.log("KARSA: Supabase berhasil diinisialisasi.");
-
-    return true;
-  } catch (error) {
-    console.error(
-      "KARSA: Gagal initialize Supabase:",
-      error
-    );
-
-    return false;
-  }
-}
-
-/* =========================================================
-   DATABASE LOAD
-   ========================================================= */
-
-async function loadTable(tableName, stateKey) {
-  if (!sb) {
-    throw new Error("Supabase belum terhubung.");
   }
 
-  const result = await sb
-    .from(tableName)
-    .select("*");
+  let client = null;
 
-  if (result.error) {
-    console.error(
-      `KARSA: Error table ${tableName}:`,
-      result.error
-    );
-
-    throw result.error;
-  }
-
-  state[stateKey] = result.data || [];
-
-  return state[stateKey];
-}
-
-async function loadAll() {
-  if (!sb) {
-    throw new Error("Supabase belum terhubung.");
-  }
-
-  /*
-    Kita load satu per satu supaya kalau salah satu tabel
-    bermasalah, error-nya mudah diketahui.
-  */
-
-  const tables = [
-    ["transactions", "transactions"],
-    ["sales", "sales"],
-    ["purchases", "purchases"],
-    ["accounts_receivable", "ar"],
-    ["accounts_payable", "ap"],
-    ["products", "products"],
-    ["journal_headers", "journals"],
-    ["accounts", "accounts"],
-    ["cash_accounts", "cashAccounts"]
-  ];
-
-  for (const [tableName, stateKey] of tables) {
+  if (configured()) {
     try {
-      await loadTable(tableName, stateKey);
-    } catch (error) {
-      console.warn(
-        `KARSA: Tidak dapat membaca ${tableName}.`,
-        error
-      );
-
-      /*
-        Jangan bikin aplikasi stuck.
-        Kalau sebuah tabel gagal, kita tetap lanjut.
-      */
-
-      state[stateKey] = [];
+      const { createClient } = window.supabase;
+      client = createClient(SB_URL, SB_KEY);
+      console.log("KARSA: Supabase connected");
+    } catch (err) {
+      console.error("KARSA: Supabase initialization failed", err);
     }
+  } else {
+    console.warn("KARSA: Supabase configuration belum tersedia.");
   }
 
-  window.KARSA_STATE = state;
 
-  return state;
-}
+  /* =========================================================
+     2. GLOBAL STATE
+     ========================================================= */
 
-/* =========================================================
-   GENERIC INSERT
-   ========================================================= */
+  const state = {
+    user: null,
+    profile: null,
 
-async function insert(tableName, data) {
-  if (!sb) {
-    throw new Error("Supabase belum terhubung.");
-  }
+    transactions: [],
+    sales: [],
+    purchases: [],
+    receivables: [],
+    payables: [],
+    products: [],
+    journals: [],
+    accounts: [],
+    cashAccounts: [],
 
-  const payload = {
-    ...data
+    loading: false
   };
 
-  /*
-    created_by hanya ditambahkan jika tersedia.
-  */
 
-  if (currentUser?.id) {
-    payload.created_by = currentUser.id;
+  /* =========================================================
+     3. HELPERS
+     ========================================================= */
+
+  const $ = (selector) => document.querySelector(selector);
+
+  const $$ = (selector) => [...document.querySelectorAll(selector)];
+
+  function escapeHTML(value) {
+    if (value === null || value === undefined) return "";
+
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
   }
 
-  const result = await sb
-    .from(tableName)
-    .insert(payload)
-    .select()
-    .single();
-
-  if (result.error) {
-    throw result.error;
+  function number(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
   }
 
-  return result.data;
-}
-
-/* =========================================================
-   UPDATE
-   ========================================================= */
-
-async function update(tableName, id, data) {
-  if (!sb) {
-    throw new Error("Supabase belum terhubung.");
+  function money(value) {
+    return new Intl.NumberFormat("id-ID", {
+      style: "currency",
+      currency: "IDR",
+      maximumFractionDigits: 0
+    }).format(number(value));
   }
 
-  const result = await sb
-    .from(tableName)
-    .update(data)
-    .eq("id", id)
-    .select()
-    .single();
+  function dateID(value) {
+    if (!value) return "-";
 
-  if (result.error) {
-    throw result.error;
-  }
-
-  return result.data;
-}
-
-/* =========================================================
-   DELETE
-   ========================================================= */
-
-async function remove(tableName, id) {
-  if (!sb) {
-    throw new Error("Supabase belum terhubung.");
-  }
-
-  const result = await sb
-    .from(tableName)
-    .delete()
-    .eq("id", id);
-
-  if (result.error) {
-    throw result.error;
-  }
-
-  return true;
-}
-
-/* =========================================================
-   LOGIN
-   ========================================================= */
-
-async function login(email, password) {
-  if (!sb) {
-    throw new Error("Supabase belum terhubung.");
-  }
-
-  const result = await sb.auth.signInWithPassword({
-    email: email,
-    password: password
-  });
-
-  if (result.error) {
-    throw result.error;
-  }
-
-  return result.data;
-}
-
-/* =========================================================
-   LOGOUT
-   ========================================================= */
-
-async function logout() {
-  if (!sb) {
-    showLogin();
-    return;
-  }
-
-  try {
-    const result = await sb.auth.signOut();
-
-    if (result.error) {
-      throw result.error;
-    }
-
-    currentUser = null;
-
-    showLogin();
-
-  } catch (error) {
-    console.error("Logout error:", error);
-  }
-}
-
-/* =========================================================
-   NUMBER GENERATOR
-   ========================================================= */
-
-function generateNumber(prefix, rows, field) {
-  let max = 0;
-
-  for (const row of rows || []) {
-    const value = String(row[field] || "");
-
-    const match = value.match(/(\d+)$/);
-
-    if (match) {
-      max = Math.max(max, Number(match[1]));
+    try {
+      return new Intl.DateTimeFormat("id-ID", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric"
+      }).format(new Date(value));
+    } catch {
+      return value;
     }
   }
 
-  return (
-    prefix +
-    "-" +
-    String(max + 1).padStart(5, "0")
-  );
-}
+  function today() {
+    const d = new Date();
 
-/* =========================================================
-   CASH TRANSACTION
-   ========================================================= */
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
 
-async function saveCashTransaction(options = {}) {
-
-  const data = {
-    transaction_no: generateNumber(
-      "TRX",
-      state.transactions,
-      "transaction_no"
-    ),
-
-    transaction_date:
-      options.date || today(),
-
-    source_type:
-      options.sourceType || "other",
-
-    description:
-      options.description || "",
-
-    category:
-      options.category || "",
-
-    cash_account_id:
-      options.cashAccountId || null,
-
-    cash_in:
-      Number(options.inAmount || 0),
-
-    cash_out:
-      Number(options.outAmount || 0),
-
-    reference_no:
-      options.referenceNo || "",
-
-    pic:
-      options.pic || "",
-
-    status:
-      options.status || "posted"
-  };
-
-  if (!data.description) {
-    throw new Error(
-      "Deskripsi transaksi wajib diisi."
-    );
+    return `${y}-${m}-${day}`;
   }
 
-  const saved = await insert(
-    "transactions",
-    data
-  );
-
-  await loadAll();
-  renderAll();
-
-  return saved;
-}
-
-/* =========================================================
-   JOURNAL
-   ========================================================= */
-
-async function postJournal(options = {}) {
-
-  const lines = Array.isArray(options.lines)
-    ? options.lines
-    : [];
-
-  if (!lines.length) {
-    throw new Error(
-      "Jurnal harus memiliki minimal satu baris."
-    );
+  function uid(prefix = "TRX") {
+    return `${prefix}-${Date.now().toString(36).toUpperCase()}`;
   }
 
-  const totalDebit = lines.reduce(
-    (total, line) =>
-      total + Number(line.debit || 0),
-    0
-  );
+  function showToast(message, type = "normal") {
+    const toast = $("#toast");
 
-  const totalCredit = lines.reduce(
-    (total, line) =>
-      total + Number(line.credit || 0),
-    0
-  );
+    if (!toast) return;
 
-  if (
-    Math.abs(
-      totalDebit - totalCredit
-    ) > 0.005
-  ) {
-    throw new Error(
-      "Jurnal tidak balance. Total Debit harus sama dengan Total Kredit."
-    );
+    toast.textContent = message;
+    toast.className = `toast show ${type}`;
+
+    clearTimeout(window.__toastTimer);
+
+    window.__toastTimer = setTimeout(() => {
+      toast.className = "toast";
+    }, 3500);
   }
 
-  const header = await insert(
-    "journal_headers",
-    {
-      journal_no: generateNumber(
-        "JRN",
-        state.journals,
-        "journal_no"
-      ),
-
-      journal_date:
-        options.date || today(),
-
-      journal_type:
-        options.type || "general",
-
-      source_type:
-        options.sourceType || "manual",
-
-      source_id:
-        options.sourceId || null,
-
-      description:
-        options.description || "",
-
-      status:
-        options.status || "posted"
-    }
-  );
-
-  const journalLines = lines.map(
-    (line, index) => ({
-      journal_id: header.id,
-
-      line_no: index + 1,
-
-      account_id:
-        line.account_id || null,
-
-      description:
-        line.description ||
-        options.description ||
-        "",
-
-      debit:
-        Number(line.debit || 0),
-
-      credit:
-        Number(line.credit || 0)
-    })
-  );
-
-  const result = await sb
-    .from("journal_lines")
-    .insert(journalLines);
-
-  if (result.error) {
-    throw result.error;
+  function setLoading(loading) {
+    state.loading = loading;
   }
 
-  await loadAll();
-  renderAll();
+  function hideLoader() {
+    const loader = $("#loader");
 
-  return header;
-}
+    if (!loader) return;
 
-/* =========================================================
-   TABLE
-   ========================================================= */
+    loader.classList.add("hide");
 
-function createTable(headers, rows) {
+    setTimeout(() => {
+      loader.classList.add("hidden");
+    }, 700);
+  }
 
-  if (!rows || !rows.length) {
+  function showAuth() {
+    $("#auth")?.classList.remove("hidden");
+    $("#app")?.classList.add("hidden");
+  }
+
+  function showApp() {
+    $("#auth")?.classList.add("hidden");
+    $("#app")?.classList.remove("hidden");
+  }
+
+  function emptyState(text = "Belum ada data.") {
     return `
-      <div class="notice">
-        Belum ada data.
+      <div class="empty-state">
+        <div class="empty-icon">◌</div>
+        <strong>${escapeHTML(text)}</strong>
       </div>
     `;
   }
 
-  return `
-    <div class="table-wrap">
+  function errorText(error) {
+    if (!error) return "Terjadi kesalahan.";
+
+    return (
+      error.message ||
+      error.error_description ||
+      error.details ||
+      "Terjadi kesalahan."
+    );
+  }
+
+
+  /* =========================================================
+     4. SUPABASE DATABASE HELPERS
+     ========================================================= */
+
+  async function selectTable(table, options = {}) {
+    if (!client) return [];
+
+    let query = client.from(table).select(options.select || "*");
+
+    if (options.order) {
+      query = query.order(
+        options.order.column,
+        {
+          ascending:
+            options.order.ascending === undefined
+              ? false
+              : options.order.ascending
+        }
+      );
+    }
+
+    if (options.limit) {
+      query = query.limit(options.limit);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.warn(`Table ${table}:`, error.message);
+      return [];
+    }
+
+    return data || [];
+  }
+
+  async function insertRow(table, payload) {
+    if (!client) {
+      throw new Error("Supabase belum terhubung.");
+    }
+
+    const { data, error } = await client
+      .from(table)
+      .insert(payload)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return data;
+  }
+
+  async function updateRow(table, id, payload) {
+    if (!client) {
+      throw new Error("Supabase belum terhubung.");
+    }
+
+    const { data, error } = await client
+      .from(table)
+      .update(payload)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return data;
+  }
+
+  async function deleteRow(table, id) {
+    if (!client) {
+      throw new Error("Supabase belum terhubung.");
+    }
+
+    const { error } = await client
+      .from(table)
+      .delete()
+      .eq("id", id);
+
+    if (error) throw error;
+  }
+
+
+  /* =========================================================
+     5. AUTH
+     ========================================================= */
+
+  async function getSession() {
+    if (!client) return null;
+
+    try {
+      const { data, error } = await client.auth.getSession();
+
+      if (error) {
+        console.error("Session error:", error);
+        return null;
+      }
+
+      return data?.session || null;
+    } catch (err) {
+      console.error(err);
+      return null;
+    }
+  }
+
+  async function login(email, password) {
+    if (!client) {
+      throw new Error(
+        "Supabase belum dikonfigurasi. Periksa config.js."
+      );
+    }
+
+    const { data, error } = await client.auth.signInWithPassword({
+      email,
+      password
+    });
+
+    if (error) throw error;
+
+    state.user = data.user;
+
+    await loadProfile();
+
+    return data;
+  }
+
+  async function logout() {
+    try {
+      if (client) {
+        await client.auth.signOut();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+
+    state.user = null;
+    state.profile = null;
+
+    showAuth();
+
+    showToast("Berhasil keluar.");
+  }
+
+
+  /* =========================================================
+     6. PROFILE
+     ========================================================= */
+
+  async function loadProfile() {
+    if (!client || !state.user) return;
+
+    try {
+      const { data, error } = await client
+        .from("profiles")
+        .select("*")
+        .eq("id", state.user.id)
+        .maybeSingle();
+
+      if (error) {
+        console.warn("Profile:", error.message);
+        return;
+      }
+
+      state.profile = data || null;
+
+      updateProfileUI();
+    } catch (err) {
+      console.warn(err);
+    }
+  }
+
+  function updateProfileUI() {
+    const user = state.user;
+    const profile = state.profile;
+
+    const name =
+      profile?.full_name ||
+      profile?.name ||
+      user?.user_metadata?.full_name ||
+      user?.email?.split("@")[0] ||
+      "Finance";
+
+    const email =
+      profile?.email ||
+      user?.email ||
+      "finance@karsa.id";
+
+    const avatar =
+      name
+        .split(/\s+/)
+        .map((x) => x.charAt(0))
+        .join("")
+        .substring(0, 2)
+        .toUpperCase();
+
+    if ($("#profileName")) {
+      $("#profileName").textContent = name;
+    }
+
+    if ($("#profileEmail")) {
+      $("#profileEmail").textContent = email;
+    }
+
+    if ($("#avatar")) {
+      $("#avatar").textContent = avatar;
+    }
+  }
+
+
+  /* =========================================================
+     7. LOAD ALL DATA
+     ========================================================= */
+
+  async function loadData() {
+    if (!client) return;
+
+    setLoading(true);
+
+    try {
+      const [
+        transactions,
+        sales,
+        purchases,
+        receivables,
+        payables,
+        products,
+        journals,
+        accounts,
+        cashAccounts
+      ] = await Promise.all([
+        selectTable("transactions", {
+          order: {
+            column: "created_at",
+            ascending: false
+          },
+          limit: 500
+        }),
+
+        selectTable("sales", {
+          order: {
+            column: "created_at",
+            ascending: false
+          },
+          limit: 500
+        }),
+
+        selectTable("purchases", {
+          order: {
+            column: "created_at",
+            ascending: false
+          },
+          limit: 500
+        }),
+
+        selectTable("accounts_receivable", {
+          order: {
+            column: "created_at",
+            ascending: false
+          },
+          limit: 500
+        }),
+
+        selectTable("accounts_payable", {
+          order: {
+            column: "created_at",
+            ascending: false
+          },
+          limit: 500
+        }),
+
+        selectTable("products", {
+          order: {
+            column: "created_at",
+            ascending: false
+          },
+          limit: 500
+        }),
+
+        selectTable("journal_headers", {
+          order: {
+            column: "created_at",
+            ascending: false
+          },
+          limit: 500
+        }),
+
+        selectTable("accounts", {
+          order: {
+            column: "code",
+            ascending: true
+          }
+        }),
+
+        selectTable("cash_accounts", {
+          order: {
+            column: "created_at",
+            ascending: false
+          }
+        })
+      ]);
+
+      state.transactions = transactions;
+      state.sales = sales;
+      state.purchases = purchases;
+      state.receivables = receivables;
+      state.payables = payables;
+      state.products = products;
+      state.journals = journals;
+      state.accounts = accounts;
+      state.cashAccounts = cashAccounts;
+
+    } catch (err) {
+      console.error("Load data error:", err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+
+  /* =========================================================
+     8. DASHBOARD CALCULATION
+     ========================================================= */
+
+  function totalIn() {
+    return state.transactions.reduce(
+      (sum, row) => sum + number(row.inflow),
+      0
+    );
+  }
+
+  function totalOut() {
+    return state.transactions.reduce(
+      (sum, row) => sum + number(row.outflow),
+      0
+    );
+  }
+
+  function balance() {
+    return totalIn() - totalOut();
+  }
+
+  function totalAR() {
+    return state.receivables.reduce((sum, row) => {
+      const total = number(
+        row.total_amount ??
+        row.amount ??
+        row.original_amount
+      );
+
+      const paid = number(
+        row.paid_amount ??
+        row.amount_paid ??
+        0
+      );
+
+      return sum + Math.max(0, total - paid);
+    }, 0);
+  }
+
+  function totalAP() {
+    return state.payables.reduce((sum, row) => {
+      const total = number(
+        row.total_amount ??
+        row.amount ??
+        row.original_amount
+      );
+
+      const paid = number(
+        row.paid_amount ??
+        row.amount_paid ??
+        0
+      );
+
+      return sum + Math.max(0, total - paid);
+    }, 0);
+  }
+
+
+  /* =========================================================
+     9. RENDER DASHBOARD
+     ========================================================= */
+
+  function renderDashboard() {
+    const bal = balance();
+    const incoming = totalIn();
+    const outgoing = totalOut();
+    const ar = totalAR();
+    const ap = totalAP();
+
+    if ($("#heroBalance")) {
+      $("#heroBalance").textContent = money(bal);
+    }
+
+    if ($("#sBalance")) {
+      $("#sBalance").textContent = money(bal);
+    }
+
+    if ($("#sIn")) {
+      $("#sIn").textContent = money(incoming);
+    }
+
+    if ($("#sOut")) {
+      $("#sOut").textContent = money(outgoing);
+    }
+
+    if ($("#sAR")) {
+      $("#sAR").textContent = money(ar);
+    }
+
+    if ($("#sAP")) {
+      $("#sAP").textContent = money(ap);
+    }
+
+    renderRecent();
+    renderControl();
+  }
+
+  function renderRecent() {
+    const el = $("#recent");
+
+    if (!el) return;
+
+    const rows = [...state.transactions]
+      .sort((a, b) => {
+        return (
+          new Date(b.created_at || b.transaction_date || 0) -
+          new Date(a.created_at || a.transaction_date || 0)
+        );
+      })
+      .slice(0, 8);
+
+    if (!rows.length) {
+      el.innerHTML = emptyState("Belum ada transaksi.");
+      return;
+    }
+
+    el.innerHTML = `
       <table>
         <thead>
           <tr>
-            ${headers
-              .map(
-                (header) =>
-                  `<th>${escapeHTML(header)}</th>`
-              )
-              .join("")}
+            <th>Tanggal</th>
+            <th>Keterangan</th>
+            <th>Kategori</th>
+            <th>Masuk</th>
+            <th>Keluar</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(row => `
+            <tr>
+              <td>${dateID(row.transaction_date || row.created_at)}</td>
+              <td>
+                <strong>${escapeHTML(row.description || "-")}</strong>
+                <small>${escapeHTML(row.reference_no || row.id || "")}</small>
+              </td>
+              <td>${escapeHTML(row.category || "-")}</td>
+              <td class="money-in">
+                ${number(row.inflow) ? money(row.inflow) : "-"}
+              </td>
+              <td class="money-out">
+                ${number(row.outflow) ? money(row.outflow) : "-"}
+              </td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+  }
+
+  function renderControl() {
+    const el = $("#controlList");
+
+    if (!el) return;
+
+    const items = [];
+
+    if (totalAR() > 0) {
+      items.push(`
+        <div class="attention-item">
+          <span class="attention-dot"></span>
+          <div>
+            <strong>Piutang masih berjalan</strong>
+            <small>${money(totalAR())} belum diterima</small>
+          </div>
+        </div>
+      `);
+    }
+
+    if (totalAP() > 0) {
+      items.push(`
+        <div class="attention-item">
+          <span class="attention-dot"></span>
+          <div>
+            <strong>Hutang masih berjalan</strong>
+            <small>${money(totalAP())} belum dibayar</small>
+          </div>
+        </div>
+      `);
+    }
+
+    if (!items.length) {
+      items.push(`
+        <div class="attention-item">
+          <span class="attention-dot"></span>
+          <div>
+            <strong>Workspace terkendali</strong>
+            <small>Tidak ada kewajiban yang terdeteksi.</small>
+          </div>
+        </div>
+      `);
+    }
+
+    el.innerHTML = items.join("");
+  }
+
+
+  /* =========================================================
+     10. CASH
+     ========================================================= */
+
+  function renderCash() {
+    const cards = $("#cashCards");
+    const table = $("#cashTable");
+
+    if (cards) {
+      cards.innerHTML = `
+        <div class="stat-card">
+          <span>Saldo Berjalan</span>
+          <strong>${money(balance())}</strong>
+          <small>Kas + bank berdasarkan transaksi</small>
+        </div>
+
+        <div class="stat-card">
+          <span>Total Masuk</span>
+          <strong>${money(totalIn())}</strong>
+          <small>Seluruh penerimaan</small>
+        </div>
+
+        <div class="stat-card">
+          <span>Total Keluar</span>
+          <strong>${money(totalOut())}</strong>
+          <small>Seluruh pengeluaran</small>
+        </div>
+      `;
+    }
+
+    if (!table) return;
+
+    if (!state.transactions.length) {
+      table.innerHTML = emptyState("Belum ada transaksi kas/bank.");
+      return;
+    }
+
+    table.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Tanggal</th>
+            <th>Keterangan</th>
+            <th>Metode</th>
+            <th>Masuk</th>
+            <th>Keluar</th>
+            <th>Saldo</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${buildCashRows()}
+        </tbody>
+      </table>
+    `;
+  }
+
+  function buildCashRows() {
+    const rows = [...state.transactions].sort(
+      (a, b) =>
+        new Date(a.transaction_date || a.created_at || 0) -
+        new Date(b.transaction_date || b.created_at || 0)
+    );
+
+    let running = 0;
+
+    return rows.map(row => {
+      running += number(row.inflow) - number(row.outflow);
+
+      return `
+        <tr>
+          <td>${dateID(row.transaction_date || row.created_at)}</td>
+          <td>${escapeHTML(row.description || "-")}</td>
+          <td>${escapeHTML(row.payment_method || "-")}</td>
+          <td class="money-in">
+            ${number(row.inflow) ? money(row.inflow) : "-"}
+          </td>
+          <td class="money-out">
+            ${number(row.outflow) ? money(row.outflow) : "-"}
+          </td>
+          <td><strong>${money(running)}</strong></td>
+        </tr>
+      `;
+    }).reverse();
+  }
+
+
+  /* =========================================================
+     11. TRANSACTIONS
+     ========================================================= */
+
+  function renderTransactions() {
+    const el = $("#trxTable");
+
+    if (!el) return;
+
+    if (!state.transactions.length) {
+      el.innerHTML = emptyState("Belum ada transaksi.");
+      return;
+    }
+
+    el.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Tanggal</th>
+            <th>Keterangan</th>
+            <th>Kategori</th>
+            <th>Metode</th>
+            <th>Masuk</th>
+            <th>Keluar</th>
           </tr>
         </thead>
 
         <tbody>
-          ${rows
-            .map(
-              (row) => `
-                <tr>
-                  ${row
-                    .map(
-                      (cell) =>
-                        `<td>${cell}</td>`
-                    )
-                    .join("")}
-                </tr>
-              `
-            )
-            .join("")}
+          ${state.transactions.map(row => `
+            <tr>
+              <td><code>${escapeHTML(row.reference_no || row.id || "-")}</code></td>
+              <td>${dateID(row.transaction_date || row.created_at)}</td>
+              <td>${escapeHTML(row.description || "-")}</td>
+              <td>${escapeHTML(row.category || "-")}</td>
+              <td>${escapeHTML(row.payment_method || "-")}</td>
+              <td class="money-in">
+                ${number(row.inflow) ? money(row.inflow) : "-"}
+              </td>
+              <td class="money-out">
+                ${number(row.outflow) ? money(row.outflow) : "-"}
+              </td>
+            </tr>
+          `).join("")}
         </tbody>
       </table>
-    </div>
-  `;
-}
-
-/* =========================================================
-   DASHBOARD
-   ========================================================= */
-
-function renderDashboard() {
-
-  const transactions =
-    state.transactions || [];
-
-  const totalIn =
-    transactions.reduce(
-      (sum, row) =>
-        sum +
-        Number(row.cash_in || 0),
-      0
-    );
-
-  const totalOut =
-    transactions.reduce(
-      (sum, row) =>
-        sum +
-        Number(row.cash_out || 0),
-      0
-    );
-
-  const balance =
-    totalIn - totalOut;
-
-  const totalAR =
-    state.ar.reduce(
-      (sum, row) =>
-        sum +
-        Math.max(
-          0,
-          Number(row.amount || 0) -
-          Number(row.paid_amount || 0)
-        ),
-      0
-    );
-
-  const totalAP =
-    state.ap.reduce(
-      (sum, row) =>
-        sum +
-        Math.max(
-          0,
-          Number(row.amount || 0) -
-          Number(row.paid_amount || 0)
-        ),
-      0
-    );
-
-  if ($("heroBalance")) {
-    $("heroBalance").textContent =
-      rupiah(balance);
-  }
-
-  if ($("sBalance")) {
-    $("sBalance").textContent =
-      rupiah(balance);
-  }
-
-  if ($("sIn")) {
-    $("sIn").textContent =
-      rupiah(totalIn);
-  }
-
-  if ($("sOut")) {
-    $("sOut").textContent =
-      rupiah(totalOut);
-  }
-
-  if ($("sAR")) {
-    $("sAR").textContent =
-      rupiah(totalAR);
-  }
-
-  if ($("sAP")) {
-    $("sAP").textContent =
-      rupiah(totalAP);
-  }
-
-  if ($("recent")) {
-
-    const rows =
-      [...transactions]
-        .sort(
-          (a, b) =>
-            String(
-              b.transaction_date || ""
-            ).localeCompare(
-              String(
-                a.transaction_date || ""
-              )
-            )
-        )
-        .slice(0, 10);
-
-    $("recent").innerHTML =
-      createTable(
-        [
-          "Tanggal",
-          "Deskripsi",
-          "Masuk",
-          "Keluar"
-        ],
-        rows.map((row) => [
-          escapeHTML(
-            row.transaction_date || "-"
-          ),
-
-          escapeHTML(
-            row.description || "-"
-          ),
-
-          `<span class="money-in">
-            ${rupiah(row.cash_in)}
-          </span>`,
-
-          `<span class="money-out">
-            ${rupiah(row.cash_out)}
-          </span>`
-        ])
-      );
-  }
-
-  if ($("controlList")) {
-
-    $("controlList").innerHTML = `
-
-      <div class="attention-item">
-        <div class="bar"></div>
-
-        <div>
-          <strong>
-            Supabase
-          </strong>
-
-          <small>
-            ${sb
-              ? "Terhubung"
-              : "Tidak terhubung"}
-          </small>
-        </div>
-      </div>
-
-      <div class="attention-item">
-        <div class="bar"></div>
-
-        <div>
-          <strong>
-            Transaksi
-          </strong>
-
-          <small>
-            ${transactions.length}
-            transaksi
-          </small>
-        </div>
-      </div>
-
-      <div class="attention-item">
-        <div class="bar"></div>
-
-        <div>
-          <strong>
-            Jurnal
-          </strong>
-
-          <small>
-            ${state.journals.length}
-            jurnal
-          </small>
-        </div>
-      </div>
-
     `;
   }
-}
 
-/* =========================================================
-   TRANSACTIONS
-   ========================================================= */
 
-function renderTransactions() {
+  /* =========================================================
+     12. SALES
+     ========================================================= */
 
-  const element =
-    $("trxTable");
+  function renderSales() {
+    const el = $("#salesTable");
 
-  if (!element) return;
+    if (!el) return;
 
-  element.innerHTML =
-    createTable(
-      [
-        "No",
-        "Tanggal",
-        "Deskripsi",
-        "Kategori",
-        "Masuk",
-        "Keluar"
-      ],
+    if (!state.sales.length) {
+      el.innerHTML = emptyState("Belum ada data penjualan.");
+      return;
+    }
 
-      state.transactions.map(
-        (row) => [
-          escapeHTML(
-            row.transaction_no || "-"
-          ),
+    el.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Tanggal</th>
+            <th>Pelanggan</th>
+            <th>Invoice</th>
+            <th>Total</th>
+            <th>Status</th>
+            <th>Metode</th>
+          </tr>
+        </thead>
 
-          escapeHTML(
-            row.transaction_date || "-"
-          ),
+        <tbody>
+          ${state.sales.map(row => `
+            <tr>
+              <td>${dateID(row.sale_date || row.transaction_date || row.created_at)}</td>
+              <td>${escapeHTML(row.customer_name || row.customer || "-")}</td>
+              <td>${escapeHTML(row.invoice_no || row.reference_no || "-")}</td>
+              <td><strong>${money(row.total_amount || row.amount)}</strong></td>
+              <td>
+                <span class="status-badge">
+                  ${escapeHTML(row.payment_status || row.status || "Belum ada")}
+                </span>
+              </td>
+              <td>${escapeHTML(row.payment_method || "-")}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+  }
 
-          escapeHTML(
-            row.description || "-"
-          ),
 
-          escapeHTML(
-            row.category || "-"
-          ),
+  /* =========================================================
+     13. PURCHASES
+     ========================================================= */
 
-          `<span class="money-in">
-            ${rupiah(row.cash_in)}
-          </span>`,
+  function renderPurchases() {
+    const el = $("#purchaseTable");
 
-          `<span class="money-out">
-            ${rupiah(row.cash_out)}
-          </span>`
-        ]
-      )
-    );
-}
+    if (!el) return;
 
-/* =========================================================
-   SALES
-   ========================================================= */
+    if (!state.purchases.length) {
+      el.innerHTML = emptyState("Belum ada data pembelian.");
+      return;
+    }
 
-function renderSales() {
+    el.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Tanggal</th>
+            <th>Supplier</th>
+            <th>Invoice</th>
+            <th>Total</th>
+            <th>Status</th>
+            <th>Metode</th>
+          </tr>
+        </thead>
 
-  const element =
-    $("salesTable");
+        <tbody>
+          ${state.purchases.map(row => `
+            <tr>
+              <td>${dateID(row.purchase_date || row.transaction_date || row.created_at)}</td>
+              <td>${escapeHTML(row.supplier_name || row.supplier || "-")}</td>
+              <td>${escapeHTML(row.invoice_no || row.reference_no || "-")}</td>
+              <td><strong>${money(row.total_amount || row.amount)}</strong></td>
+              <td>
+                <span class="status-badge">
+                  ${escapeHTML(row.payment_status || row.status || "Belum ada")}
+                </span>
+              </td>
+              <td>${escapeHTML(row.payment_method || "-")}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+  }
 
-  if (!element) return;
 
-  element.innerHTML =
-    createTable(
-      [
-        "No",
-        "Tanggal",
-        "Customer",
-        "Total",
-        "Status"
-      ],
+  /* =========================================================
+     14. RECEIVABLES
+     ========================================================= */
 
-      state.sales.map(
-        (row) => [
-          escapeHTML(
-            row.invoice_no ||
-            row.sale_no ||
-            row.id ||
-            "-"
-          ),
+  function renderAR() {
+    const el = $("#arTable");
 
-          escapeHTML(
-            row.sale_date ||
-            row.transaction_date ||
-            "-"
-          ),
+    if (!el) return;
 
-          escapeHTML(
-            row.customer_name ||
-            "-"
-          ),
+    if (!state.receivables.length) {
+      el.innerHTML = emptyState("Belum ada piutang.");
+      return;
+    }
 
-          rupiah(
-            row.total_amount ||
-            row.amount ||
-            0
-          ),
+    el.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Pelanggan</th>
+            <th>Invoice</th>
+            <th>Total</th>
+            <th>Dibayar</th>
+            <th>Sisa</th>
+            <th>Jatuh Tempo</th>
+          </tr>
+        </thead>
 
-          escapeHTML(
-            row.status ||
-            "-"
-          )
-        ]
-      )
-    );
-}
-
-/* =========================================================
-   PURCHASES
-   ========================================================= */
-
-function renderPurchases() {
-
-  const element =
-    $("purchaseTable");
-
-  if (!element) return;
-
-  element.innerHTML =
-    createTable(
-      [
-        "No",
-        "Tanggal",
-        "Supplier",
-        "Total",
-        "Status"
-      ],
-
-      state.purchases.map(
-        (row) => [
-          escapeHTML(
-            row.invoice_no ||
-            row.purchase_no ||
-            row.id ||
-            "-"
-          ),
-
-          escapeHTML(
-            row.purchase_date ||
-            row.transaction_date ||
-            "-"
-          ),
-
-          escapeHTML(
-            row.supplier_name ||
-            "-"
-          ),
-
-          rupiah(
-            row.total_amount ||
-            row.amount ||
-            0
-          ),
-
-          escapeHTML(
-            row.status ||
-            "-"
-          )
-        ]
-      )
-    );
-}
-
-/* =========================================================
-   PIUTANG
-   ========================================================= */
-
-function renderAR() {
-
-  const element =
-    $("arTable");
-
-  if (!element) return;
-
-  element.innerHTML =
-    createTable(
-      [
-        "Customer",
-        "Jumlah",
-        "Dibayar",
-        "Sisa",
-        "Jatuh Tempo"
-      ],
-
-      state.ar.map(
-        (row) => {
-
-          const amount =
-            Number(row.amount || 0);
-
-          const paid =
-            Number(
-              row.paid_amount || 0
+        <tbody>
+          ${state.receivables.map(row => {
+            const total = number(
+              row.total_amount ??
+              row.amount ??
+              row.original_amount
             );
 
-          const remaining =
-            Math.max(
-              0,
-              amount - paid
+            const paid = number(
+              row.paid_amount ??
+              row.amount_paid ??
+              0
             );
 
-          return [
-            escapeHTML(
-              row.customer_name ||
-              "-"
-            ),
+            const remaining = Math.max(0, total - paid);
 
-            rupiah(amount),
+            return `
+              <tr>
+                <td>${escapeHTML(row.customer_name || row.customer || "-")}</td>
+                <td>${escapeHTML(row.invoice_no || "-")}</td>
+                <td>${money(total)}</td>
+                <td>${money(paid)}</td>
+                <td><strong>${money(remaining)}</strong></td>
+                <td>${dateID(row.due_date)}</td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    `;
+  }
 
-            rupiah(paid),
 
-            rupiah(remaining),
+  /* =========================================================
+     15. PAYABLES
+     ========================================================= */
 
-            escapeHTML(
-              row.due_date ||
-              "-"
-            )
-          ];
-        }
-      )
-    );
-}
+  function renderAP() {
+    const el = $("#apTable");
 
-/* =========================================================
-   HUTANG
-   ========================================================= */
+    if (!el) return;
 
-function renderAP() {
+    if (!state.payables.length) {
+      el.innerHTML = emptyState("Belum ada hutang.");
+      return;
+    }
 
-  const element =
-    $("apTable");
+    el.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Supplier</th>
+            <th>Invoice</th>
+            <th>Total</th>
+            <th>Dibayar</th>
+            <th>Sisa</th>
+            <th>Jatuh Tempo</th>
+          </tr>
+        </thead>
 
-  if (!element) return;
-
-  element.innerHTML =
-    createTable(
-      [
-        "Supplier",
-        "Jumlah",
-        "Dibayar",
-        "Sisa",
-        "Jatuh Tempo"
-      ],
-
-      state.ap.map(
-        (row) => {
-
-          const amount =
-            Number(row.amount || 0);
-
-          const paid =
-            Number(
-              row.paid_amount || 0
+        <tbody>
+          ${state.payables.map(row => {
+            const total = number(
+              row.total_amount ??
+              row.amount ??
+              row.original_amount
             );
 
-          const remaining =
-            Math.max(
-              0,
-              amount - paid
+            const paid = number(
+              row.paid_amount ??
+              row.amount_paid ??
+              0
             );
 
-          return [
-            escapeHTML(
-              row.supplier_name ||
-              "-"
-            ),
+            const remaining = Math.max(0, total - paid);
 
-            rupiah(amount),
+            return `
+              <tr>
+                <td>${escapeHTML(row.supplier_name || row.supplier || "-")}</td>
+                <td>${escapeHTML(row.invoice_no || "-")}</td>
+                <td>${money(total)}</td>
+                <td>${money(paid)}</td>
+                <td><strong>${money(remaining)}</strong></td>
+                <td>${dateID(row.due_date)}</td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    `;
+  }
 
-            rupiah(paid),
 
-            rupiah(remaining),
+  /* =========================================================
+     16. STOCK & HPP
+     ========================================================= */
 
-            escapeHTML(
-              row.due_date ||
-              "-"
-            )
-          ];
-        }
-      )
-    );
-}
+  function renderStock() {
+    const el = $("#stockTable");
 
-/* =========================================================
-   STOCK
-   ========================================================= */
+    if (!el) return;
 
-function renderStock() {
+    if (!state.products.length) {
+      el.innerHTML = emptyState("Belum ada produk.");
+      return;
+    }
 
-  const element =
-    $("stockTable");
+    el.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Produk</th>
+            <th>SKU</th>
+            <th>Ukuran</th>
+            <th>Kain</th>
+            <th>Stok</th>
+            <th>Harga Jual</th>
+            <th>HPP</th>
+            <th>Estimasi Laba</th>
+          </tr>
+        </thead>
 
-  if (!element) return;
+        <tbody>
+          ${state.products.map(row => {
+            const hpp = number(
+              row.hpp_per_unit ??
+              row.unit_cost ??
+              row.cost_price ??
+              0
+            );
 
-  element.innerHTML =
-    createTable(
-      [
-        "Produk",
-        "SKU",
-        "Harga Jual",
-        "Stok"
-      ],
+            const selling = number(
+              row.selling_price ??
+              row.sale_price ??
+              0
+            );
 
-      state.products.map(
-        (row) => [
-          escapeHTML(
-            row.name || "-"
-          ),
+            const profit = selling - hpp;
 
-          escapeHTML(
-            row.sku || "-"
-          ),
+            return `
+              <tr>
+                <td><strong>${escapeHTML(row.name || "-")}</strong></td>
+                <td>${escapeHTML(row.sku || "-")}</td>
+                <td>${escapeHTML(row.size || "-")}</td>
+                <td>${escapeHTML(row.fabric_type || row.fabric || "-")}</td>
+                <td>${number(row.stock ?? row.quantity)}</td>
+                <td>${money(selling)}</td>
+                <td>${money(hpp)}</td>
+                <td>${money(profit)}</td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    `;
+  }
 
-          rupiah(
-            row.selling_price || 0
-          ),
 
-          Number(
-            row.stock || 0
-          )
-        ]
-      )
-    );
-}
+  /* =========================================================
+     17. JOURNAL
+     ========================================================= */
 
-/* =========================================================
-   JOURNALS
-   ========================================================= */
+  function renderJournal() {
+    const el = $("#journalTable");
 
-function renderJournals() {
+    if (!el) return;
 
-  const element =
-    $("journalTable");
+    if (!state.journals.length) {
+      el.innerHTML = emptyState("Belum ada jurnal.");
+      return;
+    }
 
-  if (!element) return;
+    el.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Tanggal</th>
+            <th>Nomor</th>
+            <th>Jenis Jurnal</th>
+            <th>Keterangan</th>
+            <th>Reference</th>
+          </tr>
+        </thead>
 
-  element.innerHTML =
-    createTable(
-      [
-        "No",
-        "Tanggal",
-        "Jenis",
-        "Deskripsi",
-        "Status"
-      ],
+        <tbody>
+          ${state.journals.map(row => `
+            <tr>
+              <td>${dateID(row.journal_date || row.transaction_date || row.created_at)}</td>
+              <td>
+                <code>${escapeHTML(row.journal_no || row.id || "-")}</code>
+              </td>
+              <td>
+                <span class="status-badge">
+                  ${escapeHTML(row.journal_type || row.type || "general")}
+                </span>
+              </td>
+              <td>${escapeHTML(row.description || row.memo || "-")}</td>
+              <td>${escapeHTML(row.reference_no || row.source_id || "-")}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+  }
 
-      state.journals.map(
-        (row) => [
-          escapeHTML(
-            row.journal_no ||
-            "-"
-          ),
 
-          escapeHTML(
-            row.journal_date ||
-            "-"
-          ),
+  /* =========================================================
+     18. REPORT
+     ========================================================= */
 
-          escapeHTML(
-            row.journal_type ||
-            "-"
-          ),
+  function renderReports() {
+    const cards = $("#reportCards");
+    const table = $("#reportTable");
 
-          escapeHTML(
-            row.description ||
-            "-"
-          ),
-
-          escapeHTML(
-            row.status ||
-            "-"
-          )
-        ]
-      )
-    );
-}
-
-/* =========================================================
-   CASH
-   ========================================================= */
-
-function renderCash() {
-
-  const element =
-    $("cashTable");
-
-  if (!element) return;
-
-  element.innerHTML =
-    createTable(
-      [
-        "Tanggal",
-        "Deskripsi",
-        "Masuk",
-        "Keluar"
-      ],
-
-      state.transactions.map(
-        (row) => [
-          escapeHTML(
-            row.transaction_date ||
-            "-"
-          ),
-
-          escapeHTML(
-            row.description ||
-            "-"
-          ),
-
-          rupiah(
-            row.cash_in
-          ),
-
-          rupiah(
-            row.cash_out
-          )
-        ]
-      )
-    );
-}
-
-/* =========================================================
-   REPORT
-   ========================================================= */
-
-function renderReports() {
-
-  const element =
-    $("reportTable");
-
-  if (!element) return;
-
-  const totalSales =
-    state.sales.reduce(
-      (sum, row) =>
-        sum +
-        Number(
-          row.total_amount ||
-          row.amount ||
-          0
-        ),
+    const sales = state.sales.reduce(
+      (sum, row) => sum + number(row.total_amount || row.amount),
       0
     );
 
-  const totalPurchases =
-    state.purchases.reduce(
-      (sum, row) =>
-        sum +
-        Number(
-          row.total_amount ||
-          row.amount ||
-          0
-        ),
+    const purchases = state.purchases.reduce(
+      (sum, row) => sum + number(row.total_amount || row.amount),
       0
     );
 
-  const totalIn =
-    state.transactions.reduce(
-      (sum, row) =>
-        sum +
-        Number(
-          row.cash_in || 0
-        ),
-      0
-    );
+    const grossProfit = sales - purchases;
 
-  const totalOut =
-    state.transactions.reduce(
-      (sum, row) =>
-        sum +
-        Number(
-          row.cash_out || 0
-        ),
-      0
-    );
+    if (cards) {
+      cards.innerHTML = `
+        <div class="stat-card">
+          <span>Penjualan</span>
+          <strong>${money(sales)}</strong>
+          <small>Total penjualan</small>
+        </div>
 
-  element.innerHTML =
-    createTable(
-      [
-        "Laporan",
-        "Nilai"
-      ],
+        <div class="stat-card">
+          <span>Pembelian</span>
+          <strong>${money(purchases)}</strong>
+          <small>Total pembelian</small>
+        </div>
 
-      [
-        [
-          "Total Penjualan",
-          rupiah(totalSales)
-        ],
+        <div class="stat-card">
+          <span>Selisih</span>
+          <strong>${money(grossProfit)}</strong>
+          <small>Penjualan − pembelian</small>
+        </div>
 
-        [
-          "Total Pembelian",
-          rupiah(totalPurchases)
-        ],
+        <div class="stat-card">
+          <span>Kas Bersih</span>
+          <strong>${money(balance())}</strong>
+          <small>Uang masuk − uang keluar</small>
+        </div>
+      `;
+    }
 
-        [
-          "Total Uang Masuk",
-          rupiah(totalIn)
-        ],
+    if (table) {
+      table.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>Komponen</th>
+              <th>Nilai</th>
+            </tr>
+          </thead>
 
-        [
-          "Total Uang Keluar",
-          rupiah(totalOut)
-        ],
+          <tbody>
+            <tr>
+              <td>Penjualan</td>
+              <td>${money(sales)}</td>
+            </tr>
 
-        [
-          "Saldo Bersih",
-          rupiah(
-            totalIn - totalOut
-          )
-        ]
-      ]
-    );
-}
+            <tr>
+              <td>Pembelian</td>
+              <td>${money(purchases)}</td>
+            </tr>
 
-/* =========================================================
-   RENDER ALL
-   ========================================================= */
+            <tr>
+              <td>Piutang</td>
+              <td>${money(totalAR())}</td>
+            </tr>
 
-function renderAll() {
+            <tr>
+              <td>Hutang</td>
+              <td>${money(totalAP())}</td>
+            </tr>
 
-  try {
-    renderDashboard();
-  } catch (error) {
-    console.error(
-      "Dashboard render error:",
-      error
-    );
+            <tr>
+              <td><strong>Saldo Kas & Bank</strong></td>
+              <td><strong>${money(balance())}</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      `;
+    }
   }
 
-  try {
-    renderTransactions();
-  } catch (error) {
-    console.error(error);
-  }
 
-  try {
-    renderSales();
-  } catch (error) {
-    console.error(error);
-  }
+  /* =========================================================
+     19. TRANSACTION MODAL
+     ========================================================= */
 
-  try {
-    renderPurchases();
-  } catch (error) {
-    console.error(error);
-  }
+  function openModal(title, eyebrow, html, onSubmit) {
+    const modal = $("#modal");
+    const form = $("#modalForm");
 
-  try {
-    renderAR();
-  } catch (error) {
-    console.error(error);
-  }
+    if (!modal || !form) return;
 
-  try {
-    renderAP();
-  } catch (error) {
-    console.error(error);
-  }
+    $("#modalTitle").textContent = title;
+    $("#modalEyebrow").textContent = eyebrow;
 
-  try {
-    renderStock();
-  } catch (error) {
-    console.error(error);
-  }
+    form.innerHTML = html;
 
-  try {
-    renderJournals();
-  } catch (error) {
-    console.error(error);
-  }
+    modal.classList.remove("hidden");
 
-  try {
-    renderCash();
-  } catch (error) {
-    console.error(error);
-  }
+    form.onsubmit = async (e) => {
+      e.preventDefault();
 
-  try {
-    renderReports();
-  } catch (error) {
-    console.error(error);
-  }
-}
-
-/* =========================================================
-   NAVIGATION
-   ========================================================= */
-
-function setupNavigation() {
-
-  document
-    .querySelectorAll(".nav-item")
-    .forEach((button) => {
-
-      button.addEventListener(
-        "click",
-        function () {
-
-          const page =
-            this.dataset.page;
-
-          if (!page) return;
-
-          document
-            .querySelectorAll(".nav-item")
-            .forEach(
-              (item) =>
-                item.classList.remove(
-                  "active"
-                )
-            );
-
-          this.classList.add(
-            "active"
-          );
-
-          document
-            .querySelectorAll(".view")
-            .forEach(
-              (view) =>
-                view.classList.remove(
-                  "active"
-                )
-            );
-
-          const target =
-            $(page);
-
-          if (target) {
-            target.classList.add(
-              "active"
-            );
-          }
-
-          const title =
-            $("pageTitle");
-
-          if (title) {
-            title.textContent =
-              this.textContent.trim() ||
-              "Dashboard";
-          }
-        }
+      const button = form.querySelector(
+        'button[type="submit"]'
       );
-    });
-}
-
-/* =========================================================
-   EXPORT CSV
-   ========================================================= */
-
-function csvCell(value) {
-
-  return (
-    '"' +
-    String(value ?? "")
-      .replace(/"/g, '""') +
-    '"'
-  );
-}
-
-function downloadCSV(
-  filename,
-  rows
-) {
-
-  if (
-    !rows ||
-    !rows.length
-  ) {
-    alert(
-      "Tidak ada data untuk diekspor."
-    );
-
-    return;
-  }
-
-  const headers =
-    Object.keys(rows[0]);
-
-  const csv = [
-    headers
-      .map(csvCell)
-      .join(","),
-
-    ...rows.map(
-      (row) =>
-        headers
-          .map(
-            (header) =>
-              csvCell(
-                row[header]
-              )
-          )
-          .join(",")
-    )
-  ].join("\r\n");
-
-  const blob =
-    new Blob(
-      ["\ufeff" + csv],
-      {
-        type:
-          "text/csv;charset=utf-8;"
-      }
-    );
-
-  const url =
-    URL.createObjectURL(blob);
-
-  const link =
-    document.createElement("a");
-
-  link.href = url;
-  link.download = filename;
-
-  document.body.appendChild(
-    link
-  );
-
-  link.click();
-
-  link.remove();
-
-  URL.revokeObjectURL(url);
-}
-
-/* =========================================================
-   EXPORT EXCEL
-   ========================================================= */
-
-function exportWorkbook() {
-
-  if (!window.XLSX) {
-    alert(
-      "Library Excel belum tersedia."
-    );
-
-    return;
-  }
-
-  const workbook =
-    XLSX.utils.book_new();
-
-  function addSheet(
-    name,
-    rows
-  ) {
-
-    const data =
-      rows && rows.length
-        ? rows
-        : [{}];
-
-    const sheet =
-      XLSX.utils.json_to_sheet(
-        data
-      );
-
-    XLSX.utils.book_append_sheet(
-      workbook,
-      sheet,
-      name
-    );
-  }
-
-  addSheet(
-    "Transaksi",
-    state.transactions
-  );
-
-  addSheet(
-    "Penjualan",
-    state.sales
-  );
-
-  addSheet(
-    "Pembelian",
-    state.purchases
-  );
-
-  addSheet(
-    "Piutang",
-    state.ar
-  );
-
-  addSheet(
-    "Hutang",
-    state.ap
-  );
-
-  addSheet(
-    "Produk",
-    state.products
-  );
-
-  addSheet(
-    "Jurnal",
-    state.journals
-  );
-
-  addSheet(
-    "Akun",
-    state.accounts
-  );
-
-  XLSX.writeFile(
-    workbook,
-    "KARSA-Finance-" +
-      today() +
-      ".xlsx"
-  );
-}
-
-/* =========================================================
-   EXPORT BUTTON
-   ========================================================= */
-
-function setupExportButtons() {
-
-  document
-    .querySelectorAll(
-      "[data-export]"
-    )
-    .forEach((button) => {
-
-      button.addEventListener(
-        "click",
-        function () {
-
-          const type =
-            this.dataset.export;
-
-          if (
-            type ===
-              "transactions" ||
-            type === "all"
-          ) {
-
-            downloadCSV(
-              "KARSA-Transaksi-" +
-                today() +
-                ".csv",
-
-              state.transactions
-            );
-
-            return;
-          }
-
-          if (type === "journal") {
-
-            downloadCSV(
-              "KARSA-Jurnal-" +
-                today() +
-                ".csv",
-
-              state.journals
-            );
-
-            return;
-          }
-
-          if (type === "sales") {
-
-            downloadCSV(
-              "KARSA-Penjualan-" +
-                today() +
-                ".csv",
-
-              state.sales
-            );
-
-            return;
-          }
-
-          if (type === "purchases") {
-
-            downloadCSV(
-              "KARSA-Pembelian-" +
-                today() +
-                ".csv",
-
-              state.purchases
-            );
-
-            return;
-          }
-
-          if (type === "ar") {
-
-            downloadCSV(
-              "KARSA-Piutang-" +
-                today() +
-                ".csv",
-
-              state.ar
-            );
-
-            return;
-          }
-
-          if (type === "ap") {
-
-            downloadCSV(
-              "KARSA-Hutang-" +
-                today() +
-                ".csv",
-
-              state.ap
-            );
-
-            return;
-          }
-
-          if (type === "stock") {
-
-            downloadCSV(
-              "KARSA-Stok-" +
-                today() +
-                ".csv",
-
-              state.products
-            );
-
-            return;
-          }
-
-          if (type === "excel") {
-            exportWorkbook();
-          }
-        }
-      );
-    });
-}
-
-/* =========================================================
-   LOGIN FORM
-   ========================================================= */
-
-function setupLogin() {
-
-  const form =
-    $("loginForm");
-
-  if (!form) {
-    console.warn(
-      "KARSA: loginForm tidak ditemukan."
-    );
-
-    return;
-  }
-
-  form.addEventListener(
-    "submit",
-    async function (event) {
-
-      event.preventDefault();
-
-      const emailElement =
-        $("loginEmail");
-
-      const passwordElement =
-        $("loginPass");
-
-      const email =
-        emailElement
-          ? emailElement.value.trim()
-          : "";
-
-      const password =
-        passwordElement
-          ? passwordElement.value
-          : "";
-
-      if (!email) {
-        showMessage(
-          "Email wajib diisi."
-        );
-
-        return;
-      }
-
-      if (!password) {
-        showMessage(
-          "Password wajib diisi."
-        );
-
-        return;
-      }
-
-      if (!sb) {
-        showMessage(
-          "Supabase belum terhubung."
-        );
-
-        return;
-      }
-
-      const button =
-        form.querySelector(
-          'button[type="submit"]'
-        );
 
       if (button) {
         button.disabled = true;
-        button.dataset.originalText =
-          button.textContent;
-
-        button.textContent =
-          "Memeriksa...";
+        button.textContent = "Menyimpan...";
       }
 
       try {
+        await onSubmit(new FormData(form));
 
-        showMessage(
-          "Menghubungkan ke akun...",
-          "info"
-        );
+        closeModal();
 
-        const result =
-          await login(
-            email,
-            password
-          );
+        await refresh();
 
-        currentUser =
-          result.user;
-
-        showMessage(
-          "Login berhasil.",
-          "success"
-        );
-
-        /*
-          Tidak menunggu database
-          terlalu lama.
-        */
-
-        try {
-          await loadAll();
-        } catch (error) {
-          console.warn(
-            "Database load:",
-            error
-          );
-        }
-
-        showApp();
-
-      } catch (error) {
-
-        console.error(
-          "Login error:",
-          error
-        );
-
-        showMessage(
-          error?.message ||
-          "Login gagal. Periksa email dan password."
-        );
-
-      } finally {
+        showToast("Data berhasil disimpan.", "success");
+      } catch (err) {
+        console.error(err);
+        showToast(errorText(err), "error");
 
         if (button) {
-          button.disabled =
-            false;
-
-          button.textContent =
-            button.dataset
-              .originalText ||
-            "Masuk";
+          button.disabled = false;
+          button.textContent = "Simpan";
         }
       }
-    }
-  );
-}
+    };
+  }
 
-/* =========================================================
-   LOGOUT BUTTON
-   ========================================================= */
+  function closeModal() {
+    $("#modal")?.classList.add("hidden");
+  }
 
-function setupLogout() {
 
-  const button =
-    $("logout");
+  /* =========================================================
+     20. ADD TRANSACTION
+     ========================================================= */
 
-  if (!button) {
-    console.warn(
-      "KARSA: tombol logout tidak ditemukan."
+  function addTransactionModal() {
+    openModal(
+      "Tambah transaksi",
+      "CASH MANAGEMENT",
+      `
+        <div class="form-grid">
+
+          <label>
+            Tanggal
+            <input
+              name="transaction_date"
+              type="date"
+              value="${today()}"
+              required
+            >
+          </label>
+
+          <label>
+            Jenis
+            <select name="flow_type" required>
+              <option value="inflow">Uang Masuk</option>
+              <option value="outflow">Uang Keluar</option>
+            </select>
+          </label>
+
+          <label class="full">
+            Keterangan
+            <input
+              name="description"
+              placeholder="Contoh: Pembayaran penjualan"
+              required
+            >
+          </label>
+
+          <label>
+            Kategori
+            <select name="category">
+              <option value="Penjualan">Penjualan</option>
+              <option value="Pembelian">Pembelian</option>
+              <option value="Pemasukan Lain">Pemasukan Lain</option>
+              <option value="Pengeluaran">Pengeluaran</option>
+              <option value="Modal">Modal</option>
+              <option value="Penarikan Pemilik">Penarikan Pemilik</option>
+              <option value="Operasional">Operasional</option>
+              <option value="Lainnya">Lainnya</option>
+            </select>
+          </label>
+
+          <label>
+            Nominal
+            <input
+              name="amount"
+              type="number"
+              min="0"
+              step="1"
+              placeholder="0"
+              required
+            >
+          </label>
+
+          <label>
+            Metode
+            <select name="payment_method">
+              <option value="cash">Kas</option>
+              <option value="bank">Bank</option>
+            </select>
+          </label>
+
+          <label>
+            Reference
+            <input
+              name="reference_no"
+              placeholder="INV-0001"
+            >
+          </label>
+
+          <label class="full">
+            PIC
+            <input
+              name="pic"
+              placeholder="Nama PIC"
+            >
+          </label>
+
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="text-btn" id="cancelModal">
+            Batal
+          </button>
+
+          <button type="submit" class="gold-btn">
+            Simpan
+          </button>
+        </div>
+      `,
+      async (fd) => {
+        const flow = fd.get("flow_type");
+        const amount = number(fd.get("amount"));
+
+        if (amount <= 0) {
+          throw new Error("Nominal harus lebih dari 0.");
+        }
+
+        const payload = {
+          transaction_date: fd.get("transaction_date"),
+          description: fd.get("description"),
+          category: fd.get("category"),
+          inflow: flow === "inflow" ? amount : 0,
+          outflow: flow === "outflow" ? amount : 0,
+          payment_method: fd.get("payment_method"),
+          reference_no:
+            fd.get("reference_no") || uid("TRX"),
+          pic: fd.get("pic") || null,
+          status: "posted",
+          created_by: state.user?.id || null
+        };
+
+        await insertRow("transactions", payload);
+      }
     );
 
-    return;
+    setTimeout(() => {
+      $("#cancelModal")?.addEventListener(
+        "click",
+        closeModal
+      );
+    }, 0);
   }
 
-  button.addEventListener(
-    "click",
-    async function () {
-      await logout();
-    }
-  );
-}
 
-/* =========================================================
-   AUTH SESSION
-   ========================================================= */
+  /* =========================================================
+     21. ADD SALE
+     ========================================================= */
 
-async function checkSession() {
+  function addSaleModal() {
+    openModal(
+      "Tambah penjualan",
+      "SALES",
+      `
+        <div class="form-grid">
 
-  if (!sb) {
-    showLogin();
+          <label>
+            Tanggal
+            <input
+              name="sale_date"
+              type="date"
+              value="${today()}"
+              required
+            >
+          </label>
 
-    return;
-  }
+          <label>
+            Invoice
+            <input
+              name="invoice_no"
+              value="${uid("SALE")}"
+              required
+            >
+          </label>
 
-  try {
+          <label>
+            Pelanggan
+            <input
+              name="customer_name"
+              placeholder="Nama pelanggan"
+              required
+            >
+          </label>
 
-    const result =
-      await sb.auth.getSession();
+          <label>
+            Total
+            <input
+              name="total_amount"
+              type="number"
+              min="0"
+              step="1"
+              required
+            >
+          </label>
 
-    if (result.error) {
-      throw result.error;
-    }
+          <label>
+            Pembayaran
+            <select name="payment_method">
+              <option value="cash">Kas</option>
+              <option value="bank">Bank</option>
+              <option value="credit">Piutang</option>
+            </select>
+          </label>
 
-    const session =
-      result.data?.session;
+          <label>
+            Jatuh Tempo
+            <input
+              name="due_date"
+              type="date"
+            >
+          </label>
 
-    if (
-      session &&
-      session.user
-    ) {
+        </div>
 
-      currentUser =
-        session.user;
+        <div class="modal-actions">
+          <button type="button" class="text-btn" id="cancelModal">
+            Batal
+          </button>
 
-      /*
-        Tampilkan aplikasi segera.
-        Jangan membuat user terjebak
-        di loading hanya karena query
-        database bermasalah.
-      */
+          <button type="submit" class="gold-btn">
+            Simpan Penjualan
+          </button>
+        </div>
+      `,
+      async (fd) => {
+        const total = number(fd.get("total_amount"));
 
-      showApp();
+        if (total <= 0) {
+          throw new Error("Total penjualan harus lebih dari 0.");
+        }
 
-      loadAll()
-        .then(() => {
-          renderAll();
-        })
-        .catch((error) => {
-          console.warn(
-            "KARSA database:",
-            error
-          );
+        const paymentMethod = fd.get("payment_method");
+
+        const sale = await insertRow("sales", {
+          sale_date: fd.get("sale_date"),
+          invoice_no: fd.get("invoice_no"),
+          customer_name: fd.get("customer_name"),
+          total_amount: total,
+          payment_method: paymentMethod,
+          payment_status:
+            paymentMethod === "credit"
+              ? "unpaid"
+              : "paid",
+          due_date:
+            paymentMethod === "credit"
+              ? fd.get("due_date") || null
+              : null,
+          created_by: state.user?.id || null
         });
 
-    } else {
+        /*
+          Buat transaksi kas otomatis untuk penjualan tunai/bank.
+          Penjualan kredit masuk ke piutang.
+        */
 
-      showLogin();
-    }
-
-  } catch (error) {
-
-    console.error(
-      "Session error:",
-      error
+        if (paymentMethod !== "credit") {
+          await insertRow("transactions", {
+            transaction_date: fd.get("sale_date"),
+            description: `Penjualan ${fd.get("invoice_no")}`,
+            category: "Penjualan",
+            inflow: total,
+            outflow: 0,
+            payment_method: paymentMethod,
+            reference_no: fd.get("invoice_no"),
+            status: "posted",
+            created_by: state.user?.id || null
+          });
+        } else {
+          await insertRow("accounts_receivable", {
+            customer_name: fd.get("customer_name"),
+            invoice_no: fd.get("invoice_no"),
+            total_amount: total,
+            paid_amount: 0,
+            due_date: fd.get("due_date") || null,
+            status: "unpaid",
+            created_by: state.user?.id || null,
+            sale_id: sale?.id || null
+          });
+        }
+      }
     );
 
-    showLogin();
+    setTimeout(() => {
+      $("#cancelModal")?.addEventListener(
+        "click",
+        closeModal
+      );
+    }, 0);
   }
-}
 
-/* =========================================================
-   AUTH STATE CHANGE
-   ========================================================= */
 
-function setupAuthListener() {
+  /* =========================================================
+     22. ADD PURCHASE
+     ========================================================= */
 
-  if (!sb) return;
+  function addPurchaseModal() {
+    openModal(
+      "Tambah pembelian",
+      "PURCHASES",
+      `
+        <div class="form-grid">
 
-  sb.auth.onAuthStateChange(
-    function (_event, session) {
+          <label>
+            Tanggal
+            <input
+              name="purchase_date"
+              type="date"
+              value="${today()}"
+              required
+            >
+          </label>
 
-      if (
-        session &&
-        session.user
-      ) {
+          <label>
+            Invoice
+            <input
+              name="invoice_no"
+              value="${uid("PUR")}"
+              required
+            >
+          </label>
 
-        currentUser =
-          session.user;
+          <label>
+            Supplier
+            <input
+              name="supplier_name"
+              placeholder="Nama supplier"
+              required
+            >
+          </label>
+
+          <label>
+            Total
+            <input
+              name="total_amount"
+              type="number"
+              min="0"
+              step="1"
+              required
+            >
+          </label>
+
+          <label>
+            Pembayaran
+            <select name="payment_method">
+              <option value="cash">Kas</option>
+              <option value="bank">Bank</option>
+              <option value="credit">Hutang</option>
+            </select>
+          </label>
+
+          <label>
+            Jatuh Tempo
+            <input
+              name="due_date"
+              type="date"
+            >
+          </label>
+
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="text-btn" id="cancelModal">
+            Batal
+          </button>
+
+          <button type="submit" class="gold-btn">
+            Simpan Pembelian
+          </button>
+        </div>
+      `,
+      async (fd) => {
+        const total = number(fd.get("total_amount"));
+
+        if (total <= 0) {
+          throw new Error("Total pembelian harus lebih dari 0.");
+        }
+
+        const paymentMethod = fd.get("payment_method");
+
+        const purchase = await insertRow("purchases", {
+          purchase_date: fd.get("purchase_date"),
+          invoice_no: fd.get("invoice_no"),
+          supplier_name: fd.get("supplier_name"),
+          total_amount: total,
+          payment_method: paymentMethod,
+          payment_status:
+            paymentMethod === "credit"
+              ? "unpaid"
+              : "paid",
+          due_date:
+            paymentMethod === "credit"
+              ? fd.get("due_date") || null
+              : null,
+          created_by: state.user?.id || null
+        });
+
+        if (paymentMethod !== "credit") {
+          await insertRow("transactions", {
+            transaction_date: fd.get("purchase_date"),
+            description: `Pembelian ${fd.get("invoice_no")}`,
+            category: "Pembelian",
+            inflow: 0,
+            outflow: total,
+            payment_method: paymentMethod,
+            reference_no: fd.get("invoice_no"),
+            status: "posted",
+            created_by: state.user?.id || null
+          });
+        } else {
+          await insertRow("accounts_payable", {
+            supplier_name: fd.get("supplier_name"),
+            invoice_no: fd.get("invoice_no"),
+            total_amount: total,
+            paid_amount: 0,
+            due_date: fd.get("due_date") || null,
+            status: "unpaid",
+            created_by: state.user?.id || null,
+            purchase_id: purchase?.id || null
+          });
+        }
+      }
+    );
+
+    setTimeout(() => {
+      $("#cancelModal")?.addEventListener(
+        "click",
+        closeModal
+      );
+    }, 0);
+  }
+
+
+  /* =========================================================
+     23. ADD PRODUCT
+     ========================================================= */
+
+  function addProductModal() {
+    openModal(
+      "Tambah produk",
+      "PRODUCT & HPP",
+      `
+        <div class="form-grid">
+
+          <label>
+            Nama Produk
+            <input
+              name="name"
+              placeholder="Contoh: Karsa Dress"
+              required
+            >
+          </label>
+
+          <label>
+            SKU
+            <input
+              name="sku"
+              placeholder="KRS-001"
+            >
+          </label>
+
+          <label>
+            Ukuran
+            <input
+              name="size"
+              placeholder="S / M / L / XL"
+            >
+          </label>
+
+          <label>
+            Jenis Kain
+            <input
+              name="fabric_type"
+              placeholder="Cotton / Satin / dll"
+            >
+          </label>
+
+          <label>
+            Stok Awal
+            <input
+              name="stock"
+              type="number"
+              min="0"
+              step="1"
+              value="0"
+            >
+          </label>
+
+          <label>
+            Harga Jual
+            <input
+              name="selling_price"
+              type="number"
+              min="0"
+              step="1"
+              value="0"
+            >
+          </label>
+
+          <label>
+            HPP / Unit
+            <input
+              name="unit_cost"
+              type="number"
+              min="0"
+              step="1"
+              value="0"
+            >
+          </label>
+
+        </div>
+
+        <div class="notice">
+          Untuk HPP lengkap, komponen seperti kain, satin,
+          sticker, paper bag, thanks card, zip lock,
+          resleting, handtag dan tali rami dapat dicatat
+          melalui modul HPP.
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="text-btn" id="cancelModal">
+            Batal
+          </button>
+
+          <button type="submit" class="gold-btn">
+            Simpan Produk
+          </button>
+        </div>
+      `,
+      async (fd) => {
+        await insertRow("products", {
+          name: fd.get("name"),
+          sku: fd.get("sku") || null,
+          size: fd.get("size") || null,
+          fabric_type: fd.get("fabric_type") || null,
+          stock: number(fd.get("stock")),
+          selling_price: number(fd.get("selling_price")),
+          unit_cost: number(fd.get("unit_cost")),
+          created_by: state.user?.id || null
+        });
+      }
+    );
+
+    setTimeout(() => {
+      $("#cancelModal")?.addEventListener(
+        "click",
+        closeModal
+      );
+    }, 0);
+  }
+
+
+  /* =========================================================
+     24. JOURNAL POSTING
+     ========================================================= */
+
+  async function postJournal({
+    journalType = "general",
+    date = today(),
+    description = "",
+    referenceNo = "",
+    lines = []
+  }) {
+    if (!client) {
+      throw new Error("Supabase belum terhubung.");
+    }
+
+    if (!lines.length) {
+      throw new Error("Jurnal tidak memiliki baris.");
+    }
+
+    const debit = lines.reduce(
+      (sum, line) => sum + number(line.debit),
+      0
+    );
+
+    const credit = lines.reduce(
+      (sum, line) => sum + number(line.credit),
+      0
+    );
+
+    /*
+      Double-entry validation.
+    */
+
+    if (Math.abs(debit - credit) > 0.01) {
+      throw new Error(
+        `Jurnal tidak balance. Debit ${money(debit)} / Kredit ${money(credit)}`
+      );
+    }
+
+    const header = await insertRow("journal_headers", {
+      journal_no: uid("JRN"),
+      journal_date: date,
+      journal_type: journalType,
+      description,
+      reference_no: referenceNo || null,
+      created_by: state.user?.id || null
+    });
+
+    for (const line of lines) {
+      await insertRow("journal_lines", {
+        journal_id: header.id,
+        account_id: line.account_id || null,
+        account_code: line.account_code || null,
+        account_name: line.account_name || null,
+        description: line.description || description,
+        debit: number(line.debit),
+        credit: number(line.credit)
+      });
+    }
+
+    return header;
+  }
+
+
+  /* =========================================================
+     25. NAVIGATION
+     ========================================================= */
+
+  const pageTitles = {
+    dashboard: "Dashboard",
+    cash: "Kas & Bank",
+    transactions: "Transaksi",
+    sales: "Penjualan",
+    purchases: "Pembelian",
+    receivables: "Piutang",
+    payables: "Hutang",
+    stock: "Stok & HPP",
+    journal: "Jurnal",
+    reports: "Laporan",
+    export: "Export"
+  };
+
+  function navigate(page) {
+    $$(".nav-item").forEach(btn => {
+      btn.classList.toggle(
+        "active",
+        btn.dataset.page === page
+      );
+    });
+
+    $$(".view").forEach(view => {
+      view.classList.toggle(
+        "active",
+        view.id === page
+      );
+    });
+
+    if ($("#pageTitle")) {
+      $("#pageTitle").textContent =
+        pageTitles[page] || "Dashboard";
+    }
+
+    switch (page) {
+      case "dashboard":
+        renderDashboard();
+        break;
+
+      case "cash":
+        renderCash();
+        break;
+
+      case "transactions":
+        renderTransactions();
+        break;
+
+      case "sales":
+        renderSales();
+        break;
+
+      case "purchases":
+        renderPurchases();
+        break;
+
+      case "receivables":
+        renderAR();
+        break;
+
+      case "payables":
+        renderAP();
+        break;
+
+      case "stock":
+        renderStock();
+        break;
+
+      case "journal":
+        renderJournal();
+        break;
+
+      case "reports":
+        renderReports();
+        break;
+    }
+  }
+
+
+  /* =========================================================
+     26. EXPORT CSV
+     ========================================================= */
+
+  function csvEscape(value) {
+    if (value === null || value === undefined) {
+      return "";
+    }
+
+    const str = String(value);
+
+    if (
+      str.includes(",") ||
+      str.includes('"') ||
+      str.includes("\n")
+    ) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+
+    return str;
+  }
+
+  function downloadCSV(filename, rows) {
+    if (!rows || !rows.length) {
+      showToast("Tidak ada data untuk diexport.", "error");
+      return;
+    }
+
+    const headers = [
+      ...new Set(
+        rows.flatMap(row => Object.keys(row))
+      )
+    ];
+
+    const csv = [
+      headers.map(csvEscape).join(","),
+      ...rows.map(row =>
+        headers
+          .map(header => csvEscape(row[header]))
+          .join(",")
+      )
+    ].join("\n");
+
+    const blob = new Blob(
+      ["\ufeff" + csv],
+      {
+        type: "text/csv;charset=utf-8;"
+      }
+    );
+
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+
+    a.href = url;
+    a.download = filename;
+
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    URL.revokeObjectURL(url);
+
+    showToast(
+      `${filename} berhasil dibuat.`,
+      "success"
+    );
+  }
+
+
+  /* =========================================================
+     27. EXPORT EXCEL
+     ========================================================= */
+
+  function exportExcel() {
+    if (!window.XLSX) {
+      showToast(
+        "Library Excel belum berhasil dimuat.",
+        "error"
+      );
+      return;
+    }
+
+    const workbook = XLSX.utils.book_new();
+
+    const sheets = [
+      ["Transaksi", state.transactions],
+      ["Penjualan", state.sales],
+      ["Pembelian", state.purchases],
+      ["Piutang", state.receivables],
+      ["Hutang", state.payables],
+      ["Produk_HPP", state.products],
+      ["Jurnal", state.journals],
+      ["COA", state.accounts]
+    ];
+
+    sheets.forEach(([name, data]) => {
+      const rows =
+        data && data.length
+          ? data
+          : [{ Keterangan: "Belum ada data" }];
+
+      const ws =
+        XLSX.utils.json_to_sheet(rows);
+
+      XLSX.utils.book_append_sheet(
+        workbook,
+        ws,
+        name.substring(0, 31)
+      );
+    });
+
+    /*
+      Ringkasan otomatis
+    */
+
+    const summary = [
+      {
+        Komponen: "Saldo Kas & Bank",
+        Nilai: balance()
+      },
+      {
+        Komponen: "Total Uang Masuk",
+        Nilai: totalIn()
+      },
+      {
+        Komponen: "Total Uang Keluar",
+        Nilai: totalOut()
+      },
+      {
+        Komponen: "Total Piutang",
+        Nilai: totalAR()
+      },
+      {
+        Komponen: "Total Hutang",
+        Nilai: totalAP()
+      }
+    ];
+
+    const summarySheet =
+      XLSX.utils.json_to_sheet(summary);
+
+    XLSX.utils.book_append_sheet(
+      workbook,
+      summarySheet,
+      "Ringkasan"
+    );
+
+    XLSX.writeFile(
+      workbook,
+      `KARSA-Finance-${today()}.xlsx`
+    );
+
+    showToast(
+      "File Excel berhasil dibuat.",
+      "success"
+    );
+  }
+
+
+  /* =========================================================
+     28. EXPORT ROUTER
+     ========================================================= */
+
+  function exportData(type) {
+    switch (type) {
+      case "transactions":
+        downloadCSV(
+          "KARSA-Transactions.csv",
+          state.transactions
+        );
+        break;
+
+      case "journal":
+        downloadCSV(
+          "KARSA-Journal.csv",
+          state.journals
+        );
+        break;
+
+      case "sales":
+        downloadCSV(
+          "KARSA-Sales.csv",
+          state.sales
+        );
+        break;
+
+      case "purchases":
+        downloadCSV(
+          "KARSA-Purchases.csv",
+          state.purchases
+        );
+        break;
+
+      case "ar":
+        downloadCSV(
+          "KARSA-Piutang.csv",
+          state.receivables
+        );
+        break;
+
+      case "ap":
+        downloadCSV(
+          "KARSA-Hutang.csv",
+          state.payables
+        );
+        break;
+
+      case "stock":
+        downloadCSV(
+          "KARSA-Stok-HPP.csv",
+          state.products
+        );
+        break;
+
+      case "all":
+        downloadCSV(
+          "KARSA-All-Transactions.csv",
+          state.transactions
+        );
+        break;
+
+      default:
+        exportExcel();
+    }
+  }
+
+
+  /* =========================================================
+     29. REFRESH
+     ========================================================= */
+
+  async function refresh() {
+    await loadData();
+
+    renderDashboard();
+    renderCash();
+    renderTransactions();
+    renderSales();
+    renderPurchases();
+    renderAR();
+    renderAP();
+    renderStock();
+    renderJournal();
+    renderReports();
+  }
+
+
+  /* =========================================================
+     30. EVENT LISTENERS
+     ========================================================= */
+
+  function bindEvents() {
+
+    /*
+      Navigation
+    */
+
+    $$(".nav-item").forEach(button => {
+      button.addEventListener("click", () => {
+        navigate(button.dataset.page);
+      });
+    });
+
+
+    /*
+      Login
+    */
+
+    $("#loginForm")?.addEventListener(
+      "submit",
+      async (event) => {
+        event.preventDefault();
+
+        const email =
+          $("#loginEmail")?.value.trim();
+
+        const password =
+          $("#loginPass")?.value;
+
+        if (!email || !password) {
+          showToast(
+            "Email dan password wajib diisi.",
+            "error"
+          );
+          return;
+        }
+
+        const button =
+          $("#loginForm button[type='submit']");
+
+        if (button) {
+          button.disabled = true;
+          button.textContent = "Memeriksa...";
+        }
+
+        try {
+          await login(email, password);
+
+          showApp();
+
+          await refresh();
+
+          navigate("dashboard");
+
+          showToast(
+            "Login berhasil. Selamat datang di KARSA Finance.",
+            "success"
+          );
+
+        } catch (err) {
+          console.error(err);
+
+          showToast(
+            errorText(err),
+            "error"
+          );
+        } finally {
+          if (button) {
+            button.disabled = false;
+            button.textContent = "Masuk ke Finance";
+          }
+        }
+      }
+    );
+
+
+    /*
+      Logout
+    */
+
+    $("#logout")?.addEventListener(
+      "click",
+      logout
+    );
+
+
+    /*
+      Modal close
+    */
+
+    $("#closeModal")?.addEventListener(
+      "click",
+      closeModal
+    );
+
+    $("#modal")?.addEventListener(
+      "click",
+      event => {
+        if (event.target.id === "modal") {
+          closeModal();
+        }
+      }
+    );
+
+
+    /*
+      Quick transaction
+    */
+
+    $("#quickBtn")?.addEventListener(
+      "click",
+      addTransactionModal
+    );
+
+    $("#heroAdd")?.addEventListener(
+      "click",
+      addTransactionModal
+    );
+
+    $("#cashAdd")?.addEventListener(
+      "click",
+      addTransactionModal
+    );
+
+    $("#trxAdd")?.addEventListener(
+      "click",
+      addTransactionModal
+    );
+
+
+    /*
+      Sales
+    */
+
+    $("#saleAdd")?.addEventListener(
+      "click",
+      addSaleModal
+    );
+
+
+    /*
+      Purchases
+    */
+
+    $("#purchaseAdd")?.addEventListener(
+      "click",
+      addPurchaseModal
+    );
+
+
+    /*
+      Products
+    */
+
+    $("#productAdd")?.addEventListener(
+      "click",
+      addProductModal
+    );
+
+
+    /*
+      Export
+    */
+
+    $$(".export-card").forEach(button => {
+      button.addEventListener(
+        "click",
+        () => {
+          exportData(
+            button.dataset.export
+          );
+        }
+      );
+    });
+
+
+    /*
+      Dashboard "Lihat semua"
+    */
+
+    $$("[data-go]").forEach(button => {
+      button.addEventListener("click", () => {
+        navigate(button.dataset.go);
+      });
+    });
+
+
+    /*
+      Auth tab
+      Registrasi sengaja tidak digunakan.
+      Akun dibuat melalui Supabase Auth/Admin.
+    */
+
+    $$(".auth-tabs .tab").forEach(tab => {
+      tab.addEventListener("click", () => {
+
+        $$(".auth-tabs .tab").forEach(x => {
+          x.classList.remove("active");
+        });
+
+        tab.classList.add("active");
+
+        if (tab.dataset.auth === "register") {
+          showToast(
+            "Pendaftaran akun dilakukan oleh Admin melalui Supabase.",
+            "normal"
+          );
+
+          const loginTab =
+            document.querySelector(
+              '.auth-tabs .tab[data-auth="login"]'
+            );
+
+          loginTab?.click();
+        }
+      });
+    });
+  }
+
+
+  /* =========================================================
+     31. CLOCK
+     ========================================================= */
+
+  function startClock() {
+    const el = $("#clock");
+
+    if (!el) return;
+
+    function update() {
+      const now = new Date();
+
+      el.textContent =
+        now.toLocaleString("id-ID", {
+          weekday: "short",
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit"
+        });
+    }
+
+    update();
+
+    setInterval(update, 30000);
+  }
+
+
+  /* =========================================================
+     32. SUPABASE AUTH STATE
+     ========================================================= */
+
+  function watchAuth() {
+    if (!client) return;
+
+    client.auth.onAuthStateChange(
+      async (event, session) => {
+
+        console.log(
+          "Auth event:",
+          event
+        );
+
+        if (session?.user) {
+          state.user = session.user;
+
+          await loadProfile();
+
+          showApp();
+
+          /*
+            Jangan menjalankan refresh berat
+            setiap perubahan token.
+          */
+
+          if (
+            event === "SIGNED_IN" ||
+            event === "INITIAL_SESSION"
+          ) {
+            await refresh();
+          }
+
+        } else {
+          state.user = null;
+          state.profile = null;
+
+          showAuth();
+        }
+      }
+    );
+  }
+
+
+  /* =========================================================
+     33. APPLICATION START
+     ========================================================= */
+
+  async function boot() {
+
+    /*
+      Penting:
+      Loader SELALU ditutup melalui finally.
+      Jadi kalau database error, aplikasi tidak
+      akan stuck selamanya di logo.
+    */
+
+    try {
+
+      bindEvents();
+      startClock();
+
+      if (!configured()) {
+
+        console.error(
+          "SUPABASE CONFIGURATION MISSING"
+        );
+
+        showAuth();
+
+        showToast(
+          "Supabase belum dikonfigurasi. Periksa config.js.",
+          "error"
+        );
+
+        return;
+      }
+
+      if (!client) {
+        showAuth();
+
+        showToast(
+          "Supabase gagal diinisialisasi.",
+          "error"
+        );
+
+        return;
+      }
+
+      watchAuth();
+
+      const session = await getSession();
+
+      if (session?.user) {
+
+        state.user = session.user;
+
+        await loadProfile();
 
         showApp();
 
-        /*
-          Jalankan load di luar callback
-          secara aman.
-        */
+        await refresh();
 
-        setTimeout(
-          function () {
-            loadAll()
-              .then(renderAll)
-              .catch(
-                console.warn
-              );
-          },
-          0
-        );
+        navigate("dashboard");
 
       } else {
 
-        currentUser =
-          null;
+        showAuth();
 
-        showLogin();
       }
-    }
-  );
-}
 
-/* =========================================================
-   GLOBAL FUNCTIONS
-   ========================================================= */
-
-window.KARSA = {
-
-  get state() {
-    return state;
-  },
-
-  get user() {
-    return currentUser;
-  },
-
-  loadAll,
-
-  insert,
-
-  update,
-
-  remove,
-
-  login,
-
-  logout,
-
-  saveCashTransaction,
-
-  postJournal,
-
-  downloadCSV,
-
-  exportWorkbook,
-
-  rupiah,
-
-  renderAll
-};
-
-window.KARSA_STATE =
-  state;
-
-/* =========================================================
-   START APPLICATION
-   ========================================================= */
-
-document.addEventListener(
-  "DOMContentLoaded",
-  async function () {
-
-    console.log(
-      "KARSA Finance starting..."
-    );
-
-    /*
-      Loader langsung diberi batas.
-    */
-
-    setTimeout(
-      hideLoader,
-      1500
-    );
-
-    /*
-      Setup UI dahulu.
-    */
-
-    setupNavigation();
-    setupExportButtons();
-    setupLogin();
-    setupLogout();
-
-    /*
-      Cek konfigurasi.
-    */
-
-    if (!isConfigured()) {
+    } catch (err) {
 
       console.error(
-        "KARSA: konfigurasi Supabase tidak ditemukan."
+        "KARSA BOOT ERROR:",
+        err
       );
+
+      showAuth();
+
+      showToast(
+        `Aplikasi gagal dimuat: ${errorText(err)}`,
+        "error"
+      );
+
+    } finally {
+
+      /*
+        INI BAGIAN PENTING AGAR TIDAK LOADING TERUS.
+      */
 
       hideLoader();
-
-      showLogin();
-
-      showMessage(
-        "Supabase belum dikonfigurasi. Periksa config.js."
-      );
-
-      return;
     }
-
-    /*
-      Initialize Supabase.
-    */
-
-    const initialized =
-      initializeSupabase();
-
-    if (!initialized) {
-
-      hideLoader();
-
-      showLogin();
-
-      showMessage(
-        "Supabase gagal diinisialisasi. Periksa config.js dan koneksi."
-      );
-
-      return;
-    }
-
-    /*
-      Loader selesai.
-    */
-
-    hideLoader();
-
-    /*
-      Cek login.
-    */
-
-    await checkSession();
-
-    /*
-      Pantau perubahan login/logout.
-    */
-
-    setupAuthListener();
-
-    console.log(
-      "KARSA Finance ready."
-    );
   }
-);
+
+
+  /* =========================================================
+     34. GLOBAL DEBUG
+     ========================================================= */
+
+  window.KARSA = {
+    state,
+    client,
+    refresh,
+    navigate,
+    addTransactionModal,
+    addSaleModal,
+    addPurchaseModal,
+    addProductModal,
+    exportExcel,
+    logout
+  };
+
+
+  /* =========================================================
+     35. START
+     ========================================================= */
+
+  if (
+    document.readyState === "loading"
+  ) {
+    document.addEventListener(
+      "DOMContentLoaded",
+      boot
+    );
+  } else {
+    boot();
+  }
+
+})();
